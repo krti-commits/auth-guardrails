@@ -1,143 +1,128 @@
-# Auth Guardrails - Personal Tooling
+# Auth Guardrails - Profile-Based Tooling
 
-Private workflow tooling for Auth guardrails covering the **full authentication + authorization surface**. Globally ignored, stays private.
+Private workflow tooling for Auth guardrails with **profile-based scoping**. Runs only what's relevant to your changes.
 
 ## TL;DR
 
-**Run:**
-- Clean repo: `./.claude/local/run-auth-guardrails.sh develop`
-- With Auth changes (zsh/macOS):
-  ```zsh
-  ALLOW_DIRTY=1 ./.claude/local/run-auth-guardrails.sh develop | tee /tmp/auth_run.log
-  echo "exit=${pipestatus[1]}"
-  ```
-- With Auth changes (bash):
-  ```bash
-  ALLOW_DIRTY=1 ./.claude/local/run-auth-guardrails.sh develop | tee /tmp/auth_run.log
-  echo "exit=${PIPESTATUS[0]}"
-  ```
-- With logging (recommended):
-  ```bash
-  ALLOW_DIRTY=1 LOG_RUNS=1 ./.claude/local/run-auth-guardrails.sh develop
-  ```
+```bash
+# Authorization decision engine (SpiceDB, guards, tenants)
+ALLOW_DIRTY=1 ./.claude/local/run-auth-guardrails.sh authz-core develop
 
-> **Note:** This directory is globally ignored (`~/.config/git/ignore`). Do not commit.
+# Authentication gateway (Keycloak, OIDC, SAML, JWT, policy files)
+ALLOW_DIRTY=1 ./.claude/local/run-auth-guardrails.sh authn-gateway develop
 
-**What it does:** preflight → shellcheck → baseline → lint/types/tests → writes `RESULT: PASS|FAIL`
+# Guard enforcement callers (ingestion, retrieval, catalog, models)
+ALLOW_DIRTY=1 ./.claude/local/run-auth-guardrails.sh enforce develop
 
-**Evidence:** `/tmp/claude-baseline/{pre,post}/auth/<timestamp>/`
+# Full surface (noisy - avoid unless needed)
+ALLOW_DIRTY=1 ./.claude/local/run-auth-guardrails.sh all develop
+```
 
-**Run log:** `~/auth-guardrails-runs.log` (when `LOG_RUNS=1`)
-
-**Exit codes:** 0=PASS, 1=FAIL, 2=TOOLING_ERROR
-
-**Promotion:** Copy to `.claude/shared/` and PR when ready (see `PROMOTE.md`)
+Add `LOG_RUNS=1` to build run history in `~/auth-guardrails-runs.log`.
 
 ---
 
-## Scope: Full Auth Surface
+## Profiles
 
-This workflow covers **both authentication and authorization**:
+| Profile | Scope | When to Use |
+|---------|-------|-------------|
+| **authz-core** | `kamiwaza/services/authz/` | Changing decision engine, guards, SpiceDB backend |
+| **authn-gateway** | `kamiwaza/services/auth/` + policy files | Changing JWT, Keycloak, OIDC, SAML, RBAC policy |
+| **enforce** | Ingestion, retrieval, catalog, models | Changing code that *calls* auth guards |
+| **all** | Everything above | Full audit (noisy, use sparingly) |
 
-### Source Paths
-| Path | Purpose |
-|------|---------|
-| `kamiwaza/services/auth/` | Authentication (Keycloak, OIDC, SAML, CAC, JWT, sessions) |
-| `kamiwaza/services/authz/` | Authorization (SpiceDB, decision engine, guards, tenants) |
-| `kamiwaza/dependencies/auth.py` | Shared auth dependencies |
+### Profile Details
 
-### Test Paths
-| Path | Purpose |
-|------|---------|
-| `tests/unit/services/auth/` | Authentication unit tests |
-| `tests/unit/services/authz/` | Authorization unit tests |
-| `tests/integration/services/auth/` | Integration tests |
+#### authz-core
+- **Source**: `kamiwaza/services/authz/`
+- **Tests**: `tests/unit/services/authz/`
+- **Checks**: lint, types, tests
 
-### Auth Modes Covered
-| Mode | Status | Description |
-|------|--------|-------------|
-| **RBAC** | ✅ | File-based policy (`auth_gateway_policy.yaml`) |
-| **ReBAC** | ✅ | Relationship-based (SpiceDB + PostgreSQL) |
-| **Clearance** | ✅ | CAPCO classification hierarchy |
-| **Auth Off** | ✅ | `AUTH_REBAC_ENABLED=false` |
-| **ABAC** | 🔜 | Future (attribute-based) |
+#### authn-gateway
+- **Source**: `kamiwaza/services/auth/`
+- **Tests**: `tests/unit/services/auth/`
+- **Policy**: `config/auth_gateway_policy.yaml` (YAML validation)
+- **Checks**: lint, types, policy syntax, tests
+
+#### enforce
+- **Source**: Services that import/call guard helpers
+- **Tests**: `tests/unit/services/{ingestion,retrieval,catalog,models}/`
+- **Checks**: lint, types, tests
+- **Note**: Catches issues when guard enforcement changes but authz core doesn't
 
 ---
 
-## What Runs
+## Why Profiles?
 
-1. **Preflight check** - Refuses to run if repo has changes outside `.claude/local/` (skip with `ALLOW_DIRTY=1`)
-2. **Shellcheck** - Validates hook scripts
-3. **Pre-edit baseline** - Captures git state and runs tests
-4. **Post-edit verification** - Runs lint/types/tests across all auth paths
+From the `rebac_guard_audit.md` doc:
 
-## Quality Gates
+> "Auth isn't just `authz/`. There's a real authn/auth-gateway layer in `kamiwaza/services/auth/`, and ReBAC guard usage is spread across other services."
 
-- **Lint check**: `make check-python-lint-new-code`
-- **Type check**: `make check-python-types-new-code`
-- **Tests**: Runs across all auth-related test directories
+Running everything always is **noisy**. Profiles keep it:
+- **Truthful**: Runs what's relevant to your changes
+- **Fast**: Doesn't waste time on unrelated tests
+- **Actionable**: Failures mean something
 
-## Evidence Artifacts
+---
 
-Artifacts are written to timestamped directories:
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | PASS |
+| 1 | FAIL (lint/types/policy/tests) |
+| 2 | TOOLING_ERROR (preflight, shellcheck, missing make targets) |
+
+---
+
+## Evidence
 
 ```
-/tmp/claude-baseline/
-├── pre/auth/{timestamp}/    # Baseline before changes
-│   ├── diff.txt
-│   ├── status.txt
-│   ├── tests.txt
-│   └── tests_result.txt
-└── post/auth/{timestamp}/   # Verification after changes
-    ├── lint.txt
-    ├── types.txt
-    ├── tests.txt
-    └── result.txt           # PASS or FAIL
+/tmp/claude-baseline/post/{profile}/{timestamp}/
+├── lint.txt
+├── types.txt
+├── policy.txt    # authn-gateway only
+├── tests.txt
+└── result.txt
 ```
 
-## STOP Conditions
+---
 
-The workflow will STOP and refuse to proceed if:
+## Run Log
 
-1. **Preflight fails** - Changes exist outside `.claude/local/`
-2. **Shellcheck fails** - Hook scripts have issues
-3. **Make targets missing** - Required Makefile targets don't exist
-4. **Lint fails** - Ruff found errors in changed files
-5. **Types fail** - Mypy found errors in changed files
-6. **Tests fail** - Auth tests don't pass
+When `LOG_RUNS=1`, each run appends to `~/auth-guardrails-runs.log`:
+
+```
+2026-01-23T03:00:00-0800  profile=authz-core  branch=feature/x  base=develop  exit=0  result=PASS  evidence=/tmp/...
+```
+
+---
+
+## Questions for Matt (CTO)
+
+Per `rebac_guard_audit.md`, the valuable CTO-level questions are:
+
+1. **What's the canonical "auth surface" list?** (paths + policy files)
+2. **Do we want a router posture manifest + introspection test?** (per the audit plan doc)
+3. **Should enforcement-callers be considered part of AuthZ guardrails, or owned by each service?**
+
+---
 
 ## Files
 
 ```
 .claude/local/
-├── run-auth-guardrails.sh   # Main entrypoint
+├── run-auth-guardrails.sh   # Profile-based entrypoint
 ├── hooks/
-│   ├── preflight.sh         # Scope guard
-│   ├── pre-edit.sh          # Baseline capture
-│   └── post-edit.sh         # Verification
-├── templates/
-│   └── skill-contract.md    # Reusable template
-├── authz-guardrails/
-│   └── SKILL.md             # Skill contract spec
+│   ├── preflight.sh
+│   ├── pre-edit.sh
+│   └── post-edit.sh
 ├── README.md                # This file
 └── PROMOTE.md               # Graduation checklist
 ```
 
+---
+
 ## Privacy
 
-This tooling is globally ignored via `~/.config/git/ignore`:
-```
-.claude/local/
-```
-
-It will NOT be committed unless you explicitly force-add it.
-
-## Logging
-
-When `LOG_RUNS=1`, each run appends to `~/auth-guardrails-runs.log`:
-
-```
-2026-01-23T03:00:00-0800  branch=feature/auth-fix  base=develop  domain=auth  exit=0  result=PASS  evidence=/tmp/...
-```
-
-Use this to track run history and evaluate false positive rates over time.
+Globally ignored via `~/.config/git/ignore`. Will NOT be committed unless force-added.
