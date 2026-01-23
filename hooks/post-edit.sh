@@ -1,22 +1,44 @@
 #!/usr/bin/env bash
 # Post-edit hook: Verify state after modifications
 # Usage: ./post-edit.sh [domain] [base-branch]
-# Example: ./post-edit.sh authz develop
-# Env: BRANCH=develop ./post-edit.sh authz
+# Example: ./post-edit.sh auth develop
+# Env: BRANCH=develop ./post-edit.sh auth
+#
+# Domains:
+#   auth    - Full auth surface (auth + authz services, guards, dependencies)
+#   authz   - Authorization only (legacy, maps to auth)
 
 set -euo pipefail
 
-DOMAIN="${1:-authz}"
+DOMAIN="${1:-auth}"
 BASE_BRANCH="${2:-${BRANCH:-develop}}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 OUTPUT_DIR="/tmp/claude-baseline/post/${DOMAIN}/${TIMESTAMP}"
 RESULT_FILE="$OUTPUT_DIR/result.txt"
+
+# Map domain to test paths
+get_test_paths() {
+    local domain="$1"
+    case "$domain" in
+        auth|authz)
+            # Full auth surface: auth service, authz service, guards, integration tests
+            echo "tests/unit/services/auth/ tests/unit/services/authz/ tests/integration/services/auth/"
+            ;;
+        *)
+            # Default: single domain path
+            echo "tests/unit/services/${domain}/"
+            ;;
+    esac
+}
+
+TEST_PATHS=$(get_test_paths "$DOMAIN")
 
 mkdir -p "$OUTPUT_DIR"
 
 echo "=== Verifying edits for domain: $DOMAIN ==="
 echo "Base branch: $BASE_BRANCH"
 echo "Output dir: $OUTPUT_DIR"
+echo "Test paths: $TEST_PATHS"
 
 PASS=0
 FAIL=0
@@ -44,9 +66,21 @@ else
     ((FAIL++)) || true
 fi
 
-# Tests (path-scoped, always deterministic)
+# Tests (path-scoped across all auth-related test directories)
 echo "--- Tests (path-scoped) ---"
-if make test ARGS="tests/unit/services/${DOMAIN}/" > "$OUTPUT_DIR/tests.txt" 2>&1; then
+TEST_FAILED=0
+for test_path in $TEST_PATHS; do
+    if [ -d "$test_path" ]; then
+        echo "  Running: $test_path"
+        if ! make test ARGS="$test_path" >> "$OUTPUT_DIR/tests.txt" 2>&1; then
+            TEST_FAILED=1
+        fi
+    else
+        echo "  Skipping (not found): $test_path"
+    fi
+done
+
+if [ "$TEST_FAILED" -eq 0 ]; then
     echo "Tests: PASS"
     ((PASS++)) || true
 else

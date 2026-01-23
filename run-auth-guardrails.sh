@@ -1,15 +1,24 @@
 #!/usr/bin/env bash
-# run-authz-guardrails.sh - Single entrypoint for AuthZ guardrails workflow
-# Usage: ./run-authz-guardrails.sh [base_branch]
+# run-auth-guardrails.sh - Single entrypoint for Auth guardrails workflow
+# Usage: ./run-auth-guardrails.sh [base_branch]
 #
 # Runs: preflight -> shellcheck -> pre-edit -> post-edit
 # Prints evidence directory at the end
 #
+# Scope: Full authentication + authorization surface
+#   - kamiwaza/services/auth/     (authentication: Keycloak, OIDC, SAML, CAC, JWT)
+#   - kamiwaza/services/authz/    (authorization: SpiceDB, decision engine, guards)
+#   - kamiwaza/dependencies/auth.py
+#   - tests/unit/services/auth/
+#   - tests/unit/services/authz/
+#   - tests/integration/services/auth/
+#
 # Environment:
-#   ALLOW_DIRTY=1  - Skip preflight check (use when working on real AuthZ changes)
+#   ALLOW_DIRTY=1  - Skip preflight check (use when working on real Auth changes)
 #   BASE_BRANCH    - Base branch for comparison (default: develop)
 #   NO_UNICODE=1   - Use ASCII output (for limited terminals)
-#   LOG_RUNS=1     - Append run results to ~/authz-guardrails-runs.log
+#   LOG_RUNS=1     - Append run results to ~/auth-guardrails-runs.log
+#   DOMAIN=auth    - Domain to check (default: auth, which covers full surface)
 #
 # Exit codes:
 #   0 = PASS (all guardrails passed)
@@ -27,14 +36,24 @@ cd "$REPO_ROOT"
 
 SCRIPT_DIR="$REPO_ROOT/.claude/local"
 BASE_BRANCH="${1:-${BASE_BRANCH:-develop}}"
+DOMAIN="${DOMAIN:-auth}"
 CURRENT_BRANCH="$(git branch --show-current 2>/dev/null || echo "detached")"
 
 echo "============================================"
-echo "AuthZ Guardrails Workflow"
+echo "Auth Guardrails Workflow"
 echo "============================================"
 echo "Repo root:   $REPO_ROOT"
 echo "Base branch: $BASE_BRANCH"
+echo "Domain:      $DOMAIN"
 echo "============================================"
+echo ""
+echo "Scope:"
+echo "  - kamiwaza/services/auth/   (authentication)"
+echo "  - kamiwaza/services/authz/  (authorization)"
+echo "  - kamiwaza/dependencies/auth.py"
+echo "  - tests/unit/services/auth/"
+echo "  - tests/unit/services/authz/"
+echo "  - tests/integration/services/auth/"
 echo ""
 
 # Step 1: Preflight check (unless ALLOW_DIRTY=1)
@@ -63,7 +82,7 @@ else
         echo ""
         echo "Preflight FAILED - aborting (TOOLING_ERROR)"
         echo ""
-        echo "To run anyway (e.g., when testing real AuthZ changes):"
+        echo "To run anyway (e.g., when testing real Auth changes):"
         echo "  ALLOW_DIRTY=1 $0 $BASE_BRANCH"
         exit 2
     fi
@@ -107,10 +126,10 @@ log_run() {
     local exit_code="$1"
     local result="$2"
     if [[ "${LOG_RUNS:-0}" == "1" ]]; then
-        local log_file="${HOME}/authz-guardrails-runs.log"
+        local log_file="${HOME}/auth-guardrails-runs.log"
         # Use ISO-8601 format compatible with both macOS and GNU date
-        printf "%s\tbranch=%s\tbase=%s\texit=%s\tresult=%s\tevidence=%s\n" \
-            "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$CURRENT_BRANCH" "$BASE_BRANCH" "$exit_code" "$result" "${POST_DIR:-none}" \
+        printf "%s\tbranch=%s\tbase=%s\tdomain=%s\texit=%s\tresult=%s\tevidence=%s\n" \
+            "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$CURRENT_BRANCH" "$BASE_BRANCH" "$DOMAIN" "$exit_code" "$result" "${POST_DIR:-none}" \
             >> "$log_file"
     fi
 }
@@ -125,7 +144,7 @@ require_make_target() {
     if [[ $make_exit -ne 0 ]]; then
         echo ""
         echo "$BANNER_LINE"
-        echo "$SYM_UNKNOWN AuthZ Guardrails TOOLING_ERROR | Missing make target: $target"
+        echo "$SYM_UNKNOWN Auth Guardrails TOOLING_ERROR | Missing make target: $target"
         echo "$BANNER_LINE"
         log_run 2 "TOOLING_ERROR"
         exit 2
@@ -142,7 +161,7 @@ echo ""
 
 # Step 3: Run pre-edit baseline capture
 echo "[3/4] Capturing pre-edit baseline..."
-PRE_OUTPUT=$("$SCRIPT_DIR/hooks/pre-edit.sh" authz "$BASE_BRANCH" 2>&1) || true
+PRE_OUTPUT=$("$SCRIPT_DIR/hooks/pre-edit.sh" "$DOMAIN" "$BASE_BRANCH" 2>&1) || true
 echo "$PRE_OUTPUT"
 # Parse: "Baseline captured to: /path" or "Output dir: /path"
 PRE_DIR=$(echo "$PRE_OUTPUT" | grep -E "Baseline captured to:|Output dir:" | tail -1 | sed 's/.*: //')
@@ -150,7 +169,7 @@ echo ""
 
 # Step 4: Run post-edit verification
 echo "[4/4] Running post-edit verification..."
-POST_OUTPUT=$("$SCRIPT_DIR/hooks/post-edit.sh" authz "$BASE_BRANCH" 2>&1) || true
+POST_OUTPUT=$("$SCRIPT_DIR/hooks/post-edit.sh" "$DOMAIN" "$BASE_BRANCH" 2>&1) || true
 echo "$POST_OUTPUT"
 # Parse: "Output directory: /path" or "Output dir: /path"
 POST_DIR=$(echo "$POST_OUTPUT" | grep -E "Output dir:|Output directory:" | tail -1 | sed 's/.*: //')
@@ -178,17 +197,17 @@ echo ""
 # Find the most recent post-edit directory if POST_DIR wasn't captured
 if [[ -z "${POST_DIR:-}" ]]; then
     # shellcheck disable=SC2012  # ls is fine here - dirs are timestamps (alphanumeric)
-    POST_DIR=$(ls -td /tmp/claude-baseline/post/authz/* 2>/dev/null | head -1 || true)
+    POST_DIR=$(ls -td /tmp/claude-baseline/post/"$DOMAIN"/* 2>/dev/null | head -1 || true)
 fi
 
-RESULT_FILE="${POST_DIR:-/tmp/claude-baseline/post/authz}/result.txt"
+RESULT_FILE="${POST_DIR:-/tmp/claude-baseline/post/$DOMAIN}/result.txt"
 if [[ -f "$RESULT_FILE" ]]; then
     # Result file contains "RESULT: PASS" or "RESULT: FAIL"
     if grep -q "PASS" "$RESULT_FILE"; then
         echo "Result: PASS - All guardrails passed"
         echo ""
         echo "$BANNER_LINE"
-        echo "$SYM_PASS AuthZ Guardrails PASS | $POST_DIR"
+        echo "$SYM_PASS Auth Guardrails PASS | $POST_DIR"
         echo "$BANNER_LINE"
         log_run 0 "PASS"
         exit 0
@@ -197,7 +216,7 @@ if [[ -f "$RESULT_FILE" ]]; then
         echo "Result: FAIL - Guardrails failed (see evidence for details)"
         echo ""
         echo "$BANNER_LINE"
-        echo "$SYM_FAIL AuthZ Guardrails FAIL | $POST_DIR"
+        echo "$SYM_FAIL Auth Guardrails FAIL | $POST_DIR"
         echo "$BANNER_LINE"
         log_run 1 "FAIL"
         exit 1
@@ -207,7 +226,7 @@ else
     echo "Result: UNKNOWN - Workflow error (no result file at $RESULT_FILE)"
     echo ""
     echo "$BANNER_LINE"
-    echo "$SYM_UNKNOWN AuthZ Guardrails TOOLING_ERROR | No result file"
+    echo "$SYM_UNKNOWN Auth Guardrails TOOLING_ERROR | No result file"
     echo "$BANNER_LINE"
     echo "Check the post-edit output above for errors."
     log_run 2 "TOOLING_ERROR"
