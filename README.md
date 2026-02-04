@@ -1,69 +1,122 @@
-# Auth Guardrails - Profile-Based Tooling
+# Auth Guardrails v2 - Python-Based Profile Tooling
 
-Private workflow tooling for Auth guardrails with **profile-based scoping**. Runs only what's relevant to your changes.
+Profile-based auth guardrails for Claude Code, implemented as Python hooks with deterministic evidence tracking.
 
-## TL;DR
+## Architecture
 
-```bash
-# Authorization decision engine (SpiceDB, guards, tenants)
-ALLOW_DIRTY=1 ./.claude/local/run-auth-guardrails.sh authz-core develop
-
-# Authentication gateway (Keycloak, OIDC, SAML, JWT, policy files)
-ALLOW_DIRTY=1 ./.claude/local/run-auth-guardrails.sh authn-gateway develop
-
-# Guard enforcement callers (ingestion, retrieval, catalog, models)
-ALLOW_DIRTY=1 ./.claude/local/run-auth-guardrails.sh enforce develop
-
-# Full surface (noisy - avoid unless needed)
-ALLOW_DIRTY=1 ./.claude/local/run-auth-guardrails.sh all develop
+```
+.claude/auth_assurance/
+├── bin/
+│   └── auth_assurance.py       # CLI executor: select, run, validate-policy
+├── hooks/
+│   ├── pre_tool_use_guard.py   # PreToolUse hook: gates file edits + bash commands
+│   └── stop_orchestrator.py    # Stop hook: auto-runs profiles on turn end
+├── config/
+│   ├── profiles.json           # Profile definitions + trigger patterns
+│   └── security_policy.json    # File access policy + bash blocklist
+└── .state/
+    └── last_run.json           # Evidence state (written by runner, read by guard)
 ```
 
-Add `LOG_RUNS=1` to build run history in `~/auth-guardrails-runs.log`.
+## Quick Start
 
----
+### Manual run (recommended first)
+
+```bash
+# See which profiles are triggered by your current diff
+python3 .claude/auth_assurance/bin/auth_assurance.py select --base origin/develop
+
+# Run triggered profiles
+python3 .claude/auth_assurance/bin/auth_assurance.py run --profiles auto --base origin/develop
+
+# Run a specific profile
+python3 .claude/auth_assurance/bin/auth_assurance.py run --profiles authz-core --base origin/develop
+```
+
+### Claude Code hook integration
+
+Add to `.claude/settings.local.json` (repo-local, gitignored):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/auth_assurance/hooks/pre_tool_use_guard.py\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/auth_assurance/hooks/stop_orchestrator.py\""
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "AUTH_ASSURANCE_ENABLED": "1",
+    "AUTH_ASSURANCE_AUTORUN": "0",
+    "AUTH_ASSURANCE_BASE_BRANCH": "origin/develop",
+    "AUTH_ASSURANCE_DEBOUNCE_S": "300"
+  }
+}
+```
+
+**Important:** Hooks go in `settings.local.json` (repo-scoped), NOT `~/.claude/settings.json` (global). Global hook wiring breaks in any repo that doesn't have `.claude/auth_assurance/`.
 
 ## Profiles
 
-| Profile | Scope | When to Use |
-|---------|-------|-------------|
-| **authz-core** | `kamiwaza/services/authz/` | Changing decision engine, guards, SpiceDB backend |
-| **authn-gateway** | `kamiwaza/services/auth/` + policy files | Changing JWT, Keycloak, OIDC, SAML, RBAC policy |
-| **enforce** | Ingestion, retrieval, catalog, models | Changing code that *calls* auth guards |
-| **all** | Everything above | Full audit (noisy, use sparingly) |
+| Profile | Scope | When Triggered |
+|---------|-------|----------------|
+| **authz-core** | `kamiwaza/services/authz/`, SpiceDB, guard tests | Changing decision engine, guards, tenants |
+| **authn-gateway** | `kamiwaza/services/auth/`, policy YAML, auth deps | Changing JWT, OIDC, SAML, RBAC policy |
+| **enforce** | ingestion, retrieval, models, catalog, connectors | Changing code that *calls* auth guards |
+| **posture** | `**/api/**`, `**/routes.py` | Route posture audit (manual only, `auto_select: false`) |
+| **all** | Everything | Full audit (noisy, use sparingly) |
 
-### Profile Details
+## How It Works
 
-#### authz-core
-- **Source**: `kamiwaza/services/authz/`
-- **Tests**: `tests/unit/services/authz/`
-- **Checks**: lint, types, tests
+### Evidence lifecycle
 
-#### authn-gateway
-- **Source**: `kamiwaza/services/auth/`
-- **Tests**: `tests/unit/services/auth/`
-- **Policy**: `config/auth_gateway_policy.yaml` (YAML validation)
-- **Checks**: lint, types, policy syntax, tests
+1. **`auth_assurance.py run`** executes the configured runner for each profile
+2. Results are written to `/tmp/auth-assurance/runs/<run_id>/run.json`
+3. A state summary is persisted to `.state/last_run.json` (diff fingerprint, exit codes, timestamp)
 
-#### enforce
-- **Source**: Services that import/call guard helpers
-- **Tests**: `tests/unit/services/{ingestion,retrieval,catalog,models}/`
-- **Checks**: lint, types, tests
-- **Note**: Catches issues when guard enforcement changes but authz core doesn't
+### PreToolUse guard (`pre_tool_use_guard.py`)
 
----
+Reads `.state/last_run.json` and the current diff fingerprint to make gating decisions:
 
-## Why Profiles?
+| File category | Without evidence | With stale/failing evidence | With fresh PASS |
+|---------------|------------------|-----------------------------|-----------------|
+| Secrets (`.env`, SSH keys) | **DENY** | **DENY** | **DENY** |
+| Policy files (`auth_gateway_policy*.yaml`) | **DENY** | **DENY** (requires authn-gateway PASS) | Allow |
+| Auth surfaces (`services/auth/`, `services/authz/`) | **ASK** | **ASK** | Allow |
+| Everything else | Allow | Allow | Allow |
 
-From the `rebac_guard_audit.md` doc:
+### Stop orchestrator (`stop_orchestrator.py`)
 
-> "Auth isn't just `authz/`. There's a real authn/auth-gateway layer in `kamiwaza/services/auth/`, and ReBAC guard usage is spread across other services."
+- Reads stdin for `stop_hook_active` (prevents infinite loops)
+- Checks `AUTH_ASSURANCE_ENABLED` kill-switch
+- When `AUTH_ASSURANCE_AUTORUN=1`: auto-runs triggered profiles at end of each Claude turn
+- Debounces by diff fingerprint (default 300s)
 
-Running everything always is **noisy**. Profiles keep it:
-- **Truthful**: Runs what's relevant to your changes
-- **Fast**: Doesn't waste time on unrelated tests
-- **Actionable**: Failures mean something
+## Environment Variables
 
----
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `AUTH_ASSURANCE_ENABLED` | `0` | Kill-switch. Must be `1` for hooks to enforce |
+| `AUTH_ASSURANCE_AUTORUN` | `0` | Enable auto-run on Stop hook |
+| `AUTH_ASSURANCE_BASE_BRANCH` | `origin/develop` | Branch to diff against |
+| `AUTH_ASSURANCE_DEBOUNCE_S` | `300` | Skip re-run if same fingerprint within N seconds |
 
 ## Exit Codes
 
@@ -71,58 +124,43 @@ Running everything always is **noisy**. Profiles keep it:
 |------|---------|
 | 0 | PASS |
 | 1 | FAIL (lint/types/policy/tests) |
-| 2 | TOOLING_ERROR (preflight, shellcheck, missing make targets) |
-
----
+| 2 | TOOLING_ERROR (missing runner/config) |
 
 ## Evidence
 
 ```
-/tmp/claude-baseline/post/{profile}/{timestamp}/
-├── lint.txt
-├── types.txt
-├── policy.txt    # authn-gateway only
-├── tests.txt
-└── result.txt
+/tmp/auth-assurance/runs/<run_id>/
+├── run.json                    # Run metadata + per-profile results
+└── profiles/
+    ├── <profile>.log           # Full stdout/stderr
+    └── <profile>.meta.json     # Structured result
+
+/tmp/auth-assurance/security/<YYYYMMDD>/
+└── <event_id>.json             # PreToolUse decision audit log
 ```
 
----
+## Local Overrides
 
-## Run Log
+For per-developer customization without modifying tracked files:
 
-When `LOG_RUNS=1`, each run appends to `~/auth-guardrails-runs.log`:
+- `config/profiles.local.json` — merge-override profile triggers
+- `config/security_policy.local.json` — merge-override security policy
 
-```
-2026-01-23T03:00:00-0800  profile=authz-core  branch=feature/x  base=develop  exit=0  result=PASS  evidence=/tmp/...
-```
+## Evolution from v1
 
----
-
-## Questions for Matt (CTO)
-
-Per `rebac_guard_audit.md`, the valuable CTO-level questions are:
-
-1. **What's the canonical "auth surface" list?** (paths + policy files)
-2. **Do we want a router posture manifest + introspection test?** (per the audit plan doc)
-3. **Should enforcement-callers be considered part of AuthZ guardrails, or owned by each service?**
-
----
+v1 was shell-based (`run-auth-guardrails.sh` + bash hooks). v2 rewrites everything in Python for:
+- Claude Code hook protocol compatibility (JSON stdin/stdout)
+- Per-profile exit code gating (authn-gateway can gate policy files independently)
+- Deterministic evidence fingerprinting (SHA-256 of diff file list)
+- `stop_hook_active` guard against infinite loops
+- `AUTH_ASSURANCE_ENABLED` kill-switch for cross-repo safety
 
 ## Files
 
-```
-.claude/local/
-├── run-auth-guardrails.sh   # Profile-based entrypoint
-├── hooks/
-│   ├── preflight.sh
-│   ├── pre-edit.sh
-│   └── post-edit.sh
-├── README.md                # This file
-└── PROMOTE.md               # Graduation checklist
-```
-
----
-
-## Privacy
-
-Globally ignored via `~/.config/git/ignore`. Will NOT be committed unless force-added.
+| File | Purpose |
+|------|---------|
+| `bin/auth_assurance.py` | CLI executor (select, run, validate-policy) |
+| `hooks/pre_tool_use_guard.py` | PreToolUse hook (file/bash gating) |
+| `hooks/stop_orchestrator.py` | Stop hook (auto-run orchestration) |
+| `config/profiles.json` | Profile definitions + trigger globs |
+| `config/security_policy.json` | Access policy + bash blocklist |

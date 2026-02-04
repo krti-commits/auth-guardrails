@@ -1,0 +1,96 @@
+{
+  "version": "0.3",
+  "philosophy": {
+    "mode": "safe_functional",
+    "principle": "Fail-closed for secrets/policy; confirm for auth surfaces; log every decision."
+  },
+  "bash": {
+    "blocked": [
+      {
+        "pattern": "rm -rf /",
+        "reason": "filesystem destruction"
+      },
+      {
+        "pattern": "rm -rf *",
+        "reason": "destructive delete"
+      },
+      {
+        "pattern": "curl * | bash",
+        "reason": "remote code execution"
+      },
+      {
+        "pattern": "wget * | bash",
+        "reason": "remote code execution"
+      },
+      {
+        "pattern": "git push*",
+        "reason": "prevent agent-driven remote pushes"
+      },
+      {
+        "pattern": "git commit*",
+        "reason": "prevent agent-driven commits"
+      },
+      {
+        "pattern": "gh pr merge*",
+        "reason": "prevent automated merges"
+      }
+    ],
+    "confirm": [
+      {
+        "pattern": "git reset --hard*",
+        "reason": "destructive git operation"
+      },
+      {
+        "pattern": "git clean -fd*",
+        "reason": "destructive git operation"
+      },
+      {
+        "pattern": "docker system prune*",
+        "reason": "destructive docker operation"
+      }
+    ],
+    "alert": [
+      {
+        "pattern": "pytest *",
+        "reason": "tests running"
+      },
+      {
+        "pattern": "make *",
+        "reason": "build system invoked"
+      }
+    ]
+  },
+  "paths": {
+    "zeroAccess": [
+      ".env",
+      ".env.*",
+      "**/.env",
+      "**/.env.*",
+      "**/.ssh/**",
+      "**/*id_rsa*",
+      "**/*id_ed25519*",
+      "**/*pem",
+      "**/*key"
+    ],
+    "confirmWrite": [
+      "config/auth_gateway_policy*.yaml",
+      "kamiwaza/services/auth/**",
+      "kamiwaza/services/authz/**",
+      "kamiwaza/dependencies/auth.py",
+      "spicedb/**"
+    ]
+  },
+  "evidence": {
+    "state_file": ".claude/auth_assurance/.state/last_run.json",
+    "max_age_seconds": 3600,
+    "require_success_for_paths": [
+      "config/auth_gateway_policy*.yaml"
+    ],
+    "require_confirm_without_evidence_for_paths": [
+      "kamiwaza/services/auth/**",
+      "kamiwaza/services/authz/**",
+      "kamiwaza/dependencies/auth.py",
+      "spicedb/**"
+    ]
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "version": "0.3",
+  "base_branch": "origin/develop",
+  "runner": {
+    "command_template": "./.claude/local/run-auth-guardrails.sh {profile} {base_branch}",
+    "env": {
+      "ALLOW_DIRTY": "1"
+    },
+    "cwd": "{repo_root}"
+  },
+  "profiles": {
+    "authz-core": {
+      "description": "Authorization core: decision engine, ReBAC/SpiceDB, guard seam",
+      "triggers": [
+        "kamiwaza/services/authz/**",
+        "spicedb/**",
+        "tests/unit/services/authz/**",
+        "tests/integration/services/auth_matrix/**",
+        "docs-internal/topics/auth/**"
+      ]
+    },
+    "authn-gateway": {
+      "description": "Authentication gateway + RBAC policy files (OIDC/SAML/JWT/CAC, gateway policy)",
+      "triggers": [
+        "kamiwaza/services/auth/**",
+        "kamiwaza/dependencies/auth.py",
+        "config/auth_gateway_policy*.yaml",
+        "tests/unit/services/auth/**"
+      ]
+    },
+    "enforce": {
+      "description": "Enforcement callsites that invoke guard helpers (ingestion/retrieval/models/catalog/etc.)",
+      "triggers": [
+        "kamiwaza/services/ingestion/**",
+        "kamiwaza/services/retrieval/**",
+        "kamiwaza/services/models/**",
+        "kamiwaza/services/catalog/**",
+        "kamiwaza/services/connectors/**",
+        "kamiwaza/serving/**"
+      ]
+    },
+    "posture": {
+      "description": "Route posture audit surfaces (FastAPI routers/endpoints)",
+      "triggers": [
+        "kamiwaza/services/**/api/**",
+        "kamiwaza/services/**/routes.py"
+      ],
+      "auto_select": false
+    },
+    "all": {
+      "description": "Full auth surface (noisy). Use sparingly.",
+      "triggers": [
+        "**/*"
+      ]
+    }
+  }
+}

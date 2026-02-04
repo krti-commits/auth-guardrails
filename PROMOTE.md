@@ -1,34 +1,39 @@
-# Promotion Checklist - AuthZ Guardrails
+# Promotion Checklist - Auth Guardrails v2
 
-Criteria that must be met before moving this tooling from `.claude/local/` to shared `.claude/shared/` (team feature).
+Criteria for moving from personal `.claude/auth_assurance/` to shared team tooling.
 
-## Pre-Promotion Requirements
+## Stability (must all be true)
 
-### Stability (must all be true)
-
-- [ ] Ran successfully on 10+ real AuthZ changes without false positives
-- [ ] No silent fallbacks - fails fast on error conditions
+- [x] Hook-loop fix: `stop_hook_active` guard prevents infinite Stop hook recursion
+- [x] Kill-switch: `AUTH_ASSURANCE_ENABLED` prevents cross-repo interference
+- [x] Hooks wired in `settings.local.json` (repo-scoped), NOT global `settings.json`
+- [x] Per-profile exit code gating (authn-gateway gates policy files independently)
+- [x] Defensive int() cast for profile exit codes
+- [ ] Ran successfully on 10+ real auth changes without false positives
+- [ ] No silent fallbacks — fails fast on error conditions
 - [ ] Base branch resolution is deterministic (no HEAD~N fallbacks)
 - [ ] Evidence artifacts are complete and parseable
 
-### Documentation (must all exist)
+## Documentation (must all exist)
 
-- [ ] Clear usage instructions (one command to run)
+- [x] Clear usage instructions (README.md)
+- [x] Environment variable reference
+- [x] Evidence artifact locations documented
 - [ ] STOP conditions documented with remediation steps
-- [ ] Evidence artifact locations documented
 - [ ] Integration point with `/git-push` documented
 
-### Testing (must all pass)
+## Testing (must all pass)
 
-- [ ] Shellcheck passes on all scripts
-- [ ] Scripts work on both macOS and Linux (bash 3.2+ compatible)
+- [ ] Python hooks work on macOS (verified manually)
+- [ ] Python hooks work on Linux
 - [ ] Works with both local and CI environments
-- [ ] Handles edge cases: no authz changes, fresh clone, detached HEAD
+- [ ] Handles edge cases: no auth changes, fresh clone, detached HEAD
+- [ ] Unit tests for `_select_profiles`, `_fingerprint`, `_match_any`
 
-### Integration (must be reviewed)
+## Integration (must be reviewed)
 
 - [ ] `/git-push` integration tested with real workflow
-- [ ] Non-skippable behavior confirmed (no `--skip-authz` flag)
+- [ ] Non-skippable behavior confirmed
 - [ ] Failure messaging is clear and actionable
 - [ ] At least one team member has reviewed the approach
 
@@ -36,47 +41,19 @@ Criteria that must be met before moving this tooling from `.claude/local/` to sh
 
 When all boxes are checked:
 
-1. **Copy to shared location**
+1. Copy to shared location in target repo:
    ```bash
-   mkdir -p .claude/shared/authz-guardrails
-   cp -r .claude/local/hooks .claude/shared/authz-guardrails/
-   cp .claude/local/authz-guardrails/SKILL.md .claude/shared/authz-guardrails/
+   cp -r .claude/auth_assurance/ <target>/.claude/auth_assurance/
    ```
 
-2. **Remove from global ignore**
-   ```bash
-   # Edit ~/.config/git/ignore and remove .claude/local/ line
-   # Or keep local/ ignored and only share the shared/ directory
-   ```
+2. Add hook wiring instructions to repo CLAUDE.md or onboarding docs
 
-3. **Update /git-push command**
-   - Modify `.claude/commands/git-push.md` to reference shared location
-   - Add Step 2.5: AuthZ Guardrails Check
+3. Open PR with skill contract, hooks, and updated `/git-push` integration
 
-4. **Open PR**
-   - Title: "Add AuthZ guardrails to /git-push workflow"
-   - Include: skill contract, hooks, updated git-push.md
-   - Reviewers: Sam, Jonathan, or another auth-familiar engineer
+4. Socialize: demo in standup, document in runbook
 
-5. **Socialize**
-   - Demo in team standup or async video
-   - Document in internal wiki/runbook
-   - Add to onboarding for AuthZ work
+## Rollback
 
-## Rollback Plan
-
-If issues arise after promotion:
-
-1. Revert the PR
-2. Re-add `.claude/shared/authz-guardrails/` to `.gitignore`
-3. Document what went wrong in `.claude/local/LEARNINGS.md`
-4. Fix and re-attempt promotion
-
-## Success Metrics
-
-After promotion, track:
-
-- Number of AuthZ changes that pass guardrails on first try
-- Number of STOP events (expected to decrease over time)
-- Time saved vs. manual review
-- Bugs caught before merge
+1. Remove `.claude/auth_assurance/` from target repo
+2. Remove hook entries from `settings.local.json`
+3. Document what went wrong
